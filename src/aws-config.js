@@ -1,12 +1,21 @@
 // src/aws-config.js
-// Reemplaza estos valores con los de tu User Pool en AWS Cognito
+// Configuración de Cognito desde variables de entorno (Vite).
+
+function getRequiredEnv(name) {
+  const value = import.meta.env[name]
+  if (!value) {
+    throw new Error(`[aws-config] Missing required env var: ${name}`)
+  }
+  return value
+}
 
 const awsConfig = {
   Auth: {
     Cognito: {
-      region: 'us-east-1',                        // e.g. 'us-east-1'
-      userPoolId: 'us-east-1_fCms3cnhK',          // AWS Console > Cognito > User Pool ID
-      userPoolClientId: '65ru3aghhfs76ib9vj07dbsi8b', // App client ID
+      region: getRequiredEnv('VITE_COGNITO_REGION'),
+      userPoolId: getRequiredEnv('VITE_COGNITO_USER_POOL_ID'),
+      userPoolClientId: getRequiredEnv('VITE_COGNITO_USER_POOL_CLIENT_ID'),
+      hostedUIDomain: import.meta.env.VITE_COGNITO_HOSTED_UI_DOMAIN || '',
       loginWith: {
         email: true,
       },

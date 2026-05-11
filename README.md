@@ -31,20 +31,21 @@ src/
 npm install
 ```
 
-### 2. Configurar Cognito
+### 2. Configurar Cognito (sin hardcodear secrets)
 
-Edita `src/aws-config.js` con los datos de tu User Pool:
+Crea un archivo `.env.local` con base en `.env.example`:
 
-```js
-const awsConfig = {
-  Auth: {
-    Cognito: {
-      region: 'us-east-1',                          // tu región
-      userPoolId: 'us-east-1_XXXXXXXXX',            // User Pool ID
-      userPoolClientId: 'XXXXXXXXXXXXXXXXXXXXXXXXXX', // App client ID
-    },
-  },
-}
+```bash
+cp .env.example .env.local
+```
+
+Configura estas variables:
+
+```env
+VITE_COGNITO_REGION=us-east-1
+VITE_COGNITO_USER_POOL_ID=us-east-1_XXXXXXXXX
+VITE_COGNITO_USER_POOL_CLIENT_ID=XXXXXXXXXXXXXXXXXXXXXXXXXX
+VITE_COGNITO_HOSTED_UI_DOMAIN=tu-dominio.auth.us-east-1.amazoncognito.com
 ```
 
 Encuéntralos en: **AWS Console → Cognito → User pools → [tu pool] → App clients**
