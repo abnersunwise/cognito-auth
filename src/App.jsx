@@ -3,16 +3,36 @@ import React, { useEffect, useState } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import LoginForm from './components/LoginForm'
 import ResetPasswordFlow from './components/ResetPasswordFlow'
+import RegisterForm from './components/RegisterForm'
 import { useAuth } from './hooks/useAuth'
 import { Alert, Field, Input } from './components/ui'
 
-const VIEWS = { LOGIN: 'login', RESET: 'reset', AUTHENTICATED: 'authenticated' }
+const VIEWS = { LOGIN: 'login', RESET: 'reset', REGISTER: 'register', AUTHENTICATED: 'authenticated' }
+
+function getViewFromPath(pathname) {
+  if (pathname === '/register') return VIEWS.REGISTER
+  if (pathname === '/reset') return VIEWS.RESET
+  return VIEWS.LOGIN
+}
 
 export default function App() {
-  const [view, setView] = useState(VIEWS.LOGIN)
+  const [view, setView] = useState(getViewFromPath(window.location.pathname))
   const [user, setUser] = useState(null)
   const [initializingSession, setInitializingSession] = useState(true)
   const { logout, getUser } = useAuth()
+
+  const navigate = (nextView) => {
+    setView(nextView)
+
+    const nextPath =
+      nextView === VIEWS.REGISTER ? '/register'
+        : nextView === VIEWS.RESET ? '/reset'
+        : '/'
+
+    if (window.location.pathname !== nextPath) {
+      window.history.pushState({}, '', nextPath)
+    }
+  }
 
   useEffect(() => {
     const restoreSession = async () => {
@@ -27,12 +47,19 @@ export default function App() {
     }
 
     restoreSession()
+
+    const onPopState = () => {
+      setView(getViewFromPath(window.location.pathname))
+    }
+
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
   }, [])
 
   const handleLogout = async () => {
     await logout()
     setUser(null)
-    setView(VIEWS.LOGIN)
+    navigate(VIEWS.LOGIN)
   }
 
   const displayName =
@@ -96,14 +123,22 @@ export default function App() {
 
   if (view === VIEWS.RESET) return (
     <ResetPasswordFlow
-      onBack={() => setView(VIEWS.LOGIN)}
-      onSuccess={() => setView(VIEWS.LOGIN)}
+      onBack={() => navigate(VIEWS.LOGIN)}
+      onSuccess={() => navigate(VIEWS.LOGIN)}
+    />
+  )
+
+  if (view === VIEWS.REGISTER) return (
+    <RegisterForm
+      onBack={() => navigate(VIEWS.LOGIN)}
+      onSuccess={() => navigate(VIEWS.LOGIN)}
     />
   )
 
   return (
     <LoginForm
-      onResetPassword={() => setView(VIEWS.RESET)}
+      onResetPassword={() => navigate(VIEWS.RESET)}
+      onRegister={() => navigate(VIEWS.REGISTER)}
       onSuccess={async () => {
         const currentUser = await getUser()
         setUser(currentUser)

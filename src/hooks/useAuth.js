@@ -6,6 +6,9 @@ import awsConfig from '../aws-config'
 import {
   signIn,
   signOut,
+  signUp,
+  confirmSignUp,
+  resendSignUpCode,
   confirmSignIn,
   fetchMFAPreference,
   resetPassword,
@@ -210,6 +213,71 @@ export function useAuth() {
       await signOut()
     } catch (err) {
       console.error('signOut error:', err)
+    }
+  }
+
+  // --- REGISTRO ---
+  const register = async (email, password) => {
+    setLoading(true)
+    setError(null)
+
+    try {
+      const username = normalizeUsername(email, 'email')
+      const result = await signUp({
+        username,
+        password,
+        options: {
+          userAttributes: {
+            email: username,
+          },
+        },
+      })
+
+      setLoading(false)
+      return { success: true, result }
+    } catch (err) {
+      setLoading(false)
+      const msg = mapCognitoError(err)
+      setError(msg)
+      return { success: false, error: msg }
+    }
+  }
+
+  const confirmRegister = async (email, code) => {
+    setLoading(true)
+    setError(null)
+
+    try {
+      const username = normalizeUsername(email, 'email')
+      const result = await confirmSignUp({
+        username,
+        confirmationCode: String(code || '').trim(),
+      })
+
+      setLoading(false)
+      return { success: true, result }
+    } catch (err) {
+      setLoading(false)
+      const msg = mapCognitoError(err)
+      setError(msg)
+      return { success: false, error: msg }
+    }
+  }
+
+  const resendRegisterCode = async (email) => {
+    setLoading(true)
+    setError(null)
+
+    try {
+      const username = normalizeUsername(email, 'email')
+      const result = await resendSignUpCode({ username })
+      setLoading(false)
+      return { success: true, result }
+    } catch (err) {
+      setLoading(false)
+      const msg = mapCognitoError(err)
+      setError(msg)
+      return { success: false, error: msg }
     }
   }
 
@@ -543,6 +611,9 @@ export function useAuth() {
     error,
     clearError,
     login,
+    register,
+    confirmRegister,
+    resendRegisterCode,
     logout,
     requestPasswordReset,
     confirmPasswordReset,
@@ -581,6 +652,10 @@ function mapCognitoError(err) {
       return 'No existe una cuenta con ese correo.'
     case 'UserNotConfirmedException':
       return 'Tu cuenta no ha sido verificada. Revisa tu correo.'
+    case 'UsernameExistsException':
+      return 'Ya existe una cuenta con ese correo.'
+    case 'CodeDeliveryFailureException':
+      return 'No se pudo enviar el código de verificación. Intenta más tarde.'
     case 'PasswordResetRequiredException':
       return 'Debes restablecer tu contraseña.'
     case 'LimitExceededException':
