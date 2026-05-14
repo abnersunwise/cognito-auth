@@ -1,15 +1,18 @@
 // src/components/LoginForm.jsx
 import React, { useState, useEffect } from 'react'
 import { Logo, Card, Field, Input, Button, Alert, LinkButton, BackButton, OtpInput } from './ui'
+import { signInWithRedirect } from 'aws-amplify/auth'
 import { useAuth } from '../hooks/useAuth'
-import awsConfig from '../aws-config'
+
 // Redirige a Hosted UI de Cognito para Google
-function signInWithGoogle() {
-  const domain = awsConfig.Auth.Cognito.hostedUIDomain
-  const clientId = awsConfig.Auth.Cognito.userPoolClientId
-  const redirectUri = window.location.origin
-  const url = `https://${domain}/oauth2/authorize?identity_provider=Google&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=CODE&client_id=${clientId}&scope=openid+profile+email`
-  window.location.href = url
+async function signInWithGoogle(setGoogleLoading) {
+  try {
+    setGoogleLoading(true)
+    await signInWithRedirect({ provider: 'Google' })
+  } catch (err) {
+    console.error('[Google] Error starting Hosted UI redirect:', err)
+    setGoogleLoading(false)
+  }
 }
 import { hasDeviceBackup } from '../hooks/useAuth'
 
@@ -31,6 +34,12 @@ export default function LoginForm({ onResetPassword, onRegister, onSuccess }) {
   const [deviceAlreadyKnown, setDeviceAlreadyKnown] = useState(false)
   const [rememberThisDevice, setRememberThisDevice] = useState(true)
   const [rememberedDeviceBypassUnavailable, setRememberedDeviceBypassUnavailable] = useState(false)
+  const [googleLoading, setGoogleLoading] = useState(false)
+
+  // Limpiar error cuando el componente se monta (después de logout)
+  useEffect(() => {
+    clearError()
+  }, [])
 
   // Check if this user has a backed-up device key (was previously remembered)
   useEffect(() => {
@@ -310,8 +319,8 @@ export default function LoginForm({ onResetPassword, onRegister, onSuccess }) {
 
       <button
         type="button"
-        onClick={signInWithGoogle}
-        disabled={loading}
+        onClick={() => signInWithGoogle(setGoogleLoading)}
+        disabled={loading || googleLoading}
         style={{
           width: '100%',
           height: 40,

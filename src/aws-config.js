@@ -9,14 +9,35 @@ function getRequiredEnv(name) {
   return value
 }
 
+function normalizeHostedUiDomain(value) {
+  return String(value || '')
+    .trim()
+    .replace(/^https?:\/\//, '')
+    .replace(/\/.*$/, '')
+    .replace(/\/$/, '')
+}
+
+const hostedUiDomain = normalizeHostedUiDomain(getRequiredEnv('VITE_COGNITO_HOSTED_UI_DOMAIN'))
+
 const awsConfig = {
   Auth: {
     Cognito: {
       region: getRequiredEnv('VITE_COGNITO_REGION'),
       userPoolId: getRequiredEnv('VITE_COGNITO_USER_POOL_ID'),
       userPoolClientId: getRequiredEnv('VITE_COGNITO_USER_POOL_CLIENT_ID'),
-      hostedUIDomain: import.meta.env.VITE_COGNITO_HOSTED_UI_DOMAIN || '',
+      hostedUIDomain: hostedUiDomain,
       loginWith: {
+        oauth: {
+          domain: hostedUiDomain,
+          scopes: ['openid', 'profile', 'email'],
+          redirectSignIn: [
+            `${window.location.origin}/callback`,
+          ],
+          redirectSignOut: [
+            `${window.location.origin}/logout`,
+          ],
+          responseType: 'code',
+        },
         email: true,
       },
       passwordFormat: {

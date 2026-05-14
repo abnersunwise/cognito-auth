@@ -1,5 +1,6 @@
 // src/App.jsx
 import React, { useEffect, useState } from 'react'
+import { fetchUserAttributes } from 'aws-amplify/auth'
 import { QRCodeSVG } from 'qrcode.react'
 import LoginForm from './components/LoginForm'
 import ResetPasswordFlow from './components/ResetPasswordFlow'
@@ -7,26 +8,220 @@ import RegisterForm from './components/RegisterForm'
 import { useAuth } from './hooks/useAuth'
 import { Alert, Field, Input } from './components/ui'
 
-const VIEWS = { LOGIN: 'login', RESET: 'reset', REGISTER: 'register', AUTHENTICATED: 'authenticated' }
+const VIEWS = {
+  LOGIN: 'login',
+  RESET: 'reset',
+  REGISTER: 'register',
+  CALLBACK: 'callback',
+  LOGOUT: 'logout',
+  AUTHENTICATED: 'authenticated',
+}
 
 function getViewFromPath(pathname) {
   if (pathname === '/register') return VIEWS.REGISTER
   if (pathname === '/reset') return VIEWS.RESET
+  if (pathname === '/callback') return VIEWS.CALLBACK
+  if (pathname === '/logout') return VIEWS.LOGOUT
   return VIEWS.LOGIN
 }
 
 export default function App() {
   const [view, setView] = useState(getViewFromPath(window.location.pathname))
   const [user, setUser] = useState(null)
+  const [displayName, setDisplayName] = useState('Usuario autenticado')
+  const [profileImageUrl, setProfileImageUrl] = useState(null)
+  const [isFederatedUser, setIsFederatedUser] = useState(null)
   const [initializingSession, setInitializingSession] = useState(true)
-  const { logout, getUser } = useAuth()
+  const { logout, getUser, getTokens, clearError } = useAuth()
+  const SOCIAL_SESSION_WAIT_MS = 3000
+  const SOCIAL_SESSION_POLL_MS = 120
+  const DEBUG_AUTH = import.meta.env.DEV || import.meta.env.VITE_DEBUG_AUTH === 'true'
 
-  const navigate = (nextView) => {
-    setView(nextView)
+  const debugAuth = (...args) => {
+    if (DEBUG_AUTH) console.log(...args)
+  }
+
+  const decodeJwtPayload = (token) => {
+    if (!token) return null
+    try {
+      const parts = token.split('.')
+      if (parts.length < 2) return null
+      const base64Url = parts[1]
+      const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/')
+      const padded = base64.padEnd(base64.length + (4 - (base64.length % 4 || 4)) % 4, '=')
+      return JSON.parse(window.atob(padded))
+    } catch {
+      return null
+    }
+  }
+
+  const wait = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms))
+
+  const extractPictureFromPayload = (payload) => {
+    if (!payload || typeof payload !== 'object') return null
+    if (payload.picture) return payload.picture
+    if (payload['custom:picture']) return payload['custom:picture']
+
+    const dynamicPictureKey = Object.keys(payload).find((key) => {
+      const normalized = key.toLowerCase()
+      return normalized.includes('picture') || normalized.includes('photo') || normalized.includes('avatar')
+    })
+
+    return dynamicPictureKey ? payload[dynamicPictureKey] : null
+  }
+
+  const isFederatedFromPayload = (payload) => {
+    if (!payload || typeof payload !== 'object') return false
+
+    if (payload.identities) return true
+
+    const cognitoUsername = payload['cognito:username']
+    if (typeof cognitoUsername === 'string' && cognitoUsername.toLowerCase().startsWith('google_')) {
+      return true
+    }
+
+    return false
+  }
+
+  const getIdTokenPayloadWithRetry = async () => {
+    // En OAuth federado, el token puede tardar un instante en quedar disponible.
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        const tokens = await getTokens()
+        const idTokenPayload = decodeJwtPayload(tokens.idToken)
+        if (idTokenPayload) return idTokenPayload
+      } catch {
+        // Reintentar
+      }
+
+      if (attempt < 3) await wait(150)
+    }
+
+    return null
+  }
+
+  const getUserPresentationData = async (currentUser) => {
+    if (!currentUser) {
+      return {
+        name: 'Usuario autenticado',
+        picture: null,
+        federated: false,
+      }
+    }
+
+    const fallbackName = currentUser.username || currentUser.userId || 'Usuario autenticado'
+    const loginId = currentUser.signInDetails?.loginId
+
+    const idTokenPayload = await getIdTokenPayloadWithRetry()
+    const emailFromToken = idTokenPayload?.email || null
+    const idTokenPicture = extractPictureFromPayload(idTokenPayload)
+    let picture = idTokenPicture
+    let pictureSource = idTokenPicture ? 'id_token' : 'none'
+    let federated = isFederatedFromPayload(idTokenPayload)
+
+    debugAuth('[OAuth] idTokenPayload loaded?', Boolean(idTokenPayload))
+    debugAuth('[OAuth] email claim:', emailFromToken || '(none)')
+    debugAuth('[OAuth] picture claim present in id_token?', Boolean(idTokenPicture))
+    debugAuth('[OAuth] federated claim detected?', federated)
+
+    // Si falta picture en el id_token, intentar atributos una sola vez.
+    if (!picture) {
+      try {
+        const attributes = await fetchUserAttributes()
+        picture = extractPictureFromPayload(attributes) || null
+        if (picture) pictureSource = 'attributes'
+        debugAuth('[OAuth] picture from user attributes?', Boolean(picture))
+      } catch {
+        // Ignorar: dejamos fallback visual
+        debugAuth('[OAuth] fetchUserAttributes failed while resolving picture')
+      }
+    }
+
+    // Si aún no hay picture, intentar Google API si es usuario federado.
+    if (!picture && federated) {
+      const googlePicture = await fetchPictureFromGoogleAPI()
+      if (googlePicture) {
+        picture = googlePicture
+        pictureSource = 'google_api'
+      }
+    }
+
+    const username = currentUser.username || currentUser.userId || ''
+    if (!federated) {
+      federated = typeof username === 'string' && username.toLowerCase().startsWith('google_')
+    }
+
+    return {
+      name: loginId || emailFromToken || fallbackName,
+      picture,
+      pictureSource,
+      federated,
+    }
+  }
+
+  const logAuthTokens = async (label) => {
+    try {
+      const tokens = await getTokens()
+      const idTokenPayload = decodeJwtPayload(tokens.idToken)
+
+      debugAuth(`[OAuth] ${label} Access Token:`, tokens.accessToken || '(not available)')
+      debugAuth(`[OAuth] ${label} Refresh Token:`, tokens.refreshToken || '(not available)')
+      debugAuth(`[OAuth] ${label} ID Token:`, tokens.idToken || '(not available)')
+      debugAuth(`[OAuth] ${label} ID Token claims:`, idTokenPayload || '(could not decode payload)')
+    } catch (error) {
+      debugAuth(`[OAuth] ${label} token logging failed:`, error?.message || error)
+    }
+  }
+
+  const fetchPictureFromGoogleAPI = async () => {
+    try {
+      const tokens = await getTokens()
+      if (!tokens.accessToken) {
+        debugAuth('[OAuth] No access token available for Google API call')
+        return null
+      }
+
+      const response = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+        headers: {
+          Authorization: `Bearer ${tokens.accessToken}`,
+        },
+      })
+
+      if (!response.ok) {
+        debugAuth('[OAuth] Google API userinfo request failed:', response.status, response.statusText)
+        return null
+      }
+
+      const userData = await response.json()
+      const googlePicture = userData?.picture || null
+      debugAuth('[OAuth] picture from Google API userinfo:', Boolean(googlePicture), googlePicture || '(none)')
+      return googlePicture
+    } catch (error) {
+      debugAuth('[OAuth] fetchPictureFromGoogleAPI error:', error?.message || error)
+      return null
+    }
+  }
+
+  const waitForSocialSession = async () => {
+    const startedAt = Date.now()
+
+    while (Date.now() - startedAt < SOCIAL_SESSION_WAIT_MS) {
+      const currentUser = await getUser()
+      debugAuth('[OAuth] polling session user found?', Boolean(currentUser))
+      if (currentUser) return currentUser
+      await wait(SOCIAL_SESSION_POLL_MS)
+    }
+
+    return null
+  }
+
+  const navigate = (nextView) => {    setView(nextView)
 
     const nextPath =
       nextView === VIEWS.REGISTER ? '/register'
         : nextView === VIEWS.RESET ? '/reset'
+        : nextView === VIEWS.CALLBACK ? '/callback'
+        : nextView === VIEWS.LOGOUT ? '/logout'
         : '/'
 
     if (window.location.pathname !== nextPath) {
@@ -36,14 +231,76 @@ export default function App() {
 
   useEffect(() => {
     const restoreSession = async () => {
-      const currentUser = await getUser()
+      try {
+        const currentUser = await Promise.race([
+          getUser(),
+          new Promise((resolve) => window.setTimeout(() => resolve(null), 2500)),
+        ])
 
-      if (currentUser) {
-        setUser(currentUser)
-        setView(VIEWS.AUTHENTICATED)
+        if (currentUser) {
+          setUser(currentUser)
+          setView(VIEWS.AUTHENTICATED)
+          return currentUser
+        }
+
+        setUser(null)
+        if (window.location.pathname !== '/register' && window.location.pathname !== '/reset') {
+          setView(VIEWS.LOGIN)
+        }
+        return null
+      } finally {
+        setInitializingSession(false)
       }
+    }
 
-      setInitializingSession(false)
+    const isLogoutRoute = window.location.pathname === '/logout'
+    const isCallbackRoute = window.location.pathname === '/callback'
+
+    if (isLogoutRoute) {
+      setView(VIEWS.LOGOUT)
+      console.log('[Logout] User navigated to /logout, logging out...')
+      const timer = window.setTimeout(async () => {
+        await logout()
+        clearError()
+        setUser(null)
+        window.history.replaceState({}, '', '/')
+        setView(VIEWS.LOGIN)
+        setInitializingSession(false)
+      }, 500)
+      return () => window.clearTimeout(timer)
+    }
+
+    if (isCallbackRoute) {
+      setView(VIEWS.CALLBACK)
+      debugAuth('[OAuth callback] entered callback route:', window.location.href)
+
+      let cancelled = false
+      ;(async () => {
+        const socialUser = await waitForSocialSession()
+
+        if (cancelled) return
+
+        if (socialUser) {
+          debugAuth('[OAuth callback] social session resolved, setting authenticated view')
+          setUser(socialUser)
+          setView(VIEWS.AUTHENTICATED)
+          setInitializingSession(false)
+          clearError()
+          await logAuthTokens('Google login')
+          window.history.replaceState({}, '', '/')
+          return
+        }
+
+        debugAuth('[OAuth callback] social session not ready, falling back to restoreSession()')
+        const restoredUser = await restoreSession()
+        if (restoredUser) {
+          await logAuthTokens('Restored session')
+        }
+      })()
+
+      return () => {
+        cancelled = true
+      }
     }
 
     restoreSession()
@@ -56,17 +313,25 @@ export default function App() {
     return () => window.removeEventListener('popstate', onPopState)
   }, [])
 
+  // Actualizar displayName cuando cambia el usuario (incluyendo después de Google login)
+  useEffect(() => {
+    const updateDisplay = async () => {
+      setIsFederatedUser(null)
+      const presentation = await getUserPresentationData(user)
+      setDisplayName(presentation.name)
+      setProfileImageUrl(presentation.picture)
+      setIsFederatedUser(presentation.federated)
+      debugAuth('[OAuth] picture source resolved:', presentation.pictureSource)
+    }
+    updateDisplay()
+  }, [user])
+
+
   const handleLogout = async () => {
     await logout()
     setUser(null)
     navigate(VIEWS.LOGIN)
   }
-
-  const displayName =
-    user?.signInDetails?.loginId ||
-    user?.username ||
-    user?.userId ||
-    'Usuario autenticado'
 
   if (initializingSession) {
     return (
@@ -89,13 +354,22 @@ export default function App() {
       }}>
         <div style={{
           width: 52, height: 52, background: '#E6F1FB', borderRadius: '50%',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem', overflow: 'hidden',
         }}>
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none"
-            stroke="#185FA5" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-            <circle cx="12" cy="7" r="4" />
-          </svg>
+          {profileImageUrl ? (
+            <img
+              src={profileImageUrl}
+              alt="Foto de perfil"
+              referrerPolicy="no-referrer"
+              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+            />
+          ) : (
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none"
+              stroke="#185FA5" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+              <circle cx="12" cy="7" r="4" />
+            </svg>
+          )}
         </div>
         <h2 style={{ fontSize: 20, fontWeight: 500, marginBottom: 4 }}>Sesión iniciada</h2>
         <p style={{ fontSize: 13, color: 'var(--color-text-muted)', marginBottom: '1.5rem' }}>
@@ -104,7 +378,18 @@ export default function App() {
         <p style={{ fontSize: 13, color: 'var(--color-text-muted)', marginBottom: '1rem' }}>
           Usuario: <strong>{displayName}</strong>
         </p>
-        <SecurityPanel accountName={displayName} />
+        {profileImageUrl && (
+          <p style={{ fontSize: 12, color: 'var(--color-text-muted)', margin: '-0.4rem 0 1rem' }}>
+            Foto de perfil: <strong>recibida</strong>
+          </p>
+        )}
+        {isFederatedUser === null ? (
+          <p style={{ fontSize: 12, color: 'var(--color-text-muted)', margin: '0 0 1rem' }}>
+            Comprobando configuración de seguridad...
+          </p>
+        ) : (
+          <SecurityPanel accountName={displayName} isFederatedUser={isFederatedUser} />
+        )}
         <p style={{ fontSize: 12, color: 'var(--color-text-muted)', margin: '0.5rem 0 0.35rem' }}>
           Sesión actual
         </p>
@@ -128,6 +413,35 @@ export default function App() {
     />
   )
 
+  if (view === VIEWS.LOGOUT) {
+    return (
+      <div style={{
+        background: 'var(--color-surface)', border: '0.5px solid var(--color-border)',
+        borderRadius: 12, padding: '2rem', width: '100%', maxWidth: 380, textAlign: 'center',
+      }}>
+        <p style={{ fontSize: 14, color: 'var(--color-text-muted)', margin: 0 }}>
+          Cerrando sesión...
+        </p>
+      </div>
+    )
+  }
+
+  if (view === VIEWS.CALLBACK) {
+    return (
+      <div style={{
+        background: 'var(--color-surface)', border: '0.5px solid var(--color-border)',
+        borderRadius: 12, padding: '2rem', width: '100%', maxWidth: 380, textAlign: 'center',
+      }}>
+        <p style={{ fontSize: 14, color: 'var(--color-text-muted)', margin: 0 }}>
+          Procesando login con Google...
+        </p>
+        <p style={{ fontSize: 12, color: 'var(--color-text-muted)', margin: '0.75rem 0 0' }}>
+          Revisa la consola para ver el code y el state que devolvió Cognito.
+        </p>
+      </div>
+    )
+  }
+
   if (view === VIEWS.REGISTER) return (
     <RegisterForm
       onBack={() => navigate(VIEWS.LOGIN)}
@@ -148,7 +462,7 @@ export default function App() {
   )
 }
 
-function SecurityPanel({ accountName }) {
+function SecurityPanel({ accountName, isFederatedUser = false }) {
   const {
     getMfaPreference,
     beginTotpSetup,
@@ -173,11 +487,19 @@ function SecurityPanel({ accountName }) {
   const [isDeviceRemembered, setIsDeviceRemembered] = useState(false)
   const [devices, setDevices] = useState([])
   const [showDevices, setShowDevices] = useState(false)
+  const [isFederated, setIsFederated] = useState(false)
   const bothMethodsEnabled = isEmailEnabled && isTotpEnabled
 
   useEffect(() => {
     const loadPreference = async () => {
+      if (isFederatedUser) {
+        setIsFederated(true)
+        setLoading(false)
+        return
+      }
+
       const result = await getMfaPreference()
+      let shouldLoadDeviceData = true
 
       if (result.success) {
         const enabled = result.preference?.enabled || []
@@ -185,22 +507,36 @@ function SecurityPanel({ accountName }) {
         setIsTotpEnabled(enabled.includes('TOTP'))
         setPreferredMfa(result.preference?.preferred || null)
       } else {
-        setError(result.error)
+        // Usuarios federados (Google) no soportan MFA ni dispositivos de la misma manera.
+        // Si el error es un 400/NotAuthorized, es un usuario federado — ignorar silenciosamente.
+        const isFederatedError =
+          result.error?.includes('NotAuthorized') ||
+          result.error?.includes('400') ||
+          result.error?.includes('Correo') ||
+          result.error?.includes('contraseña')
+        if (isFederatedError) {
+          setIsFederated(true)
+          shouldLoadDeviceData = false
+        } else {
+          setError(result.error)
+        }
       }
 
-      // Check if device is remembered and fetch device list
-      const [deviceStatus, devicesResult] = await Promise.all([
-        getDeviceRememberedStatus(),
-        getDevices(),
-      ])
-      setIsDeviceRemembered(deviceStatus.isRemembered)
-      setDevices(devicesResult.devices)
+      if (shouldLoadDeviceData) {
+        // Check if device is remembered and fetch device list
+        const [deviceStatus, devicesResult] = await Promise.all([
+          getDeviceRememberedStatus(),
+          getDevices(),
+        ])
+        setIsDeviceRemembered(deviceStatus.isRemembered)
+        setDevices(devicesResult.devices)
+      }
 
       setLoading(false)
     }
 
     loadPreference()
-  }, [])
+  }, [isFederatedUser])
 
   const handleStartSetup = async () => {
     setBusy(true)
@@ -368,21 +704,24 @@ function SecurityPanel({ accountName }) {
       textAlign: 'left', borderTop: '0.5px solid var(--color-border)', marginTop: '1.5rem',
       paddingTop: '1.25rem', marginBottom: '1rem',
     }}>
-      <h3 style={{ fontSize: 16, fontWeight: 500, margin: '0 0 0.35rem' }}>Verificación en dos pasos</h3>
-      <p style={{ fontSize: 13, color: 'var(--color-text-muted)', margin: '0 0 1rem' }}>
-        Configura verificación por app autenticadora o por correo y elige tu método principal.
-      </p>
+      {isFederated ? (
+        <p style={{ fontSize: 12, color: 'var(--color-text-muted)', margin: 0, textAlign: 'center' }}>
+          Sesión iniciada con Google
+        </p>
+      ) : (
+        <>
+          <h3 style={{ fontSize: 16, fontWeight: 500, margin: '0 0 0.35rem' }}>Verificación en dos pasos</h3>
+          <p style={{ fontSize: 13, color: 'var(--color-text-muted)', margin: '0 0 1rem' }}>
+            Configura verificación por app autenticadora o por correo y elige tu método principal.
+          </p>
+        </>
+      )}
 
-      {isDeviceRemembered && (
+      {!isFederated && isDeviceRemembered && (
         <div style={{
-          marginBottom: '1rem',
-          padding: '12px 12px',
-          background: '#C8E6C9',
-          border: '0.5px solid #66BB6A',
-          borderRadius: 8,
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
+          marginBottom: '1rem', padding: '12px 12px',
+          background: '#C8E6C9', border: '0.5px solid #66BB6A', borderRadius: 8,
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
         }}>
           <p style={{ fontSize: 13, margin: 0, color: '#2E7D32', fontWeight: 500 }}>
             ✓ Dispositivo recordado - MFA omitido
@@ -401,14 +740,8 @@ function SecurityPanel({ accountName }) {
             }}
             disabled={busy}
             style={{
-              fontSize: 12,
-              padding: '6px 12px',
-              background: '#2E7D32',
-              color: '#fff',
-              border: 'none',
-              borderRadius: 6,
-              cursor: busy ? 'not-allowed' : 'pointer',
-              fontWeight: 500,
+              fontSize: 12, padding: '6px 12px', background: '#2E7D32', color: '#fff',
+              border: 'none', borderRadius: 6, cursor: busy ? 'not-allowed' : 'pointer', fontWeight: 500,
             }}
           >
             {busy ? 'Olvidando...' : 'Olvidar dispositivo'}
@@ -422,10 +755,10 @@ function SecurityPanel({ accountName }) {
         </p>
       )}
 
-      {!loading && error && <Alert type="error">{error}</Alert>}
+      {!loading && !isFederated && error && <Alert type="error">{error}</Alert>}
       {!loading && message && <Alert type="success">{message}</Alert>}
 
-      {!loading && (
+      {!loading && !isFederated && (
         <div style={{ display: 'grid', gap: 8, marginBottom: '1rem' }}>
           <div style={{
             display: 'flex', justifyContent: 'space-between', alignItems: 'center',

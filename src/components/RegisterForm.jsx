@@ -1,20 +1,16 @@
 import React, { useState } from 'react'
 import { Logo, Card, Field, Input, Button, Alert, LinkButton, BackButton } from './ui'
+import { signInWithRedirect } from 'aws-amplify/auth'
 import { useAuth } from '../hooks/useAuth'
-import awsConfig from '../aws-config'
 
-function signInWithGoogle() {
-  const domain = awsConfig.Auth.Cognito.hostedUIDomain
-  const clientId = awsConfig.Auth.Cognito.userPoolClientId
-  const redirectUri = window.location.origin
-
-  if (!domain) {
-    console.error('[Google] Missing VITE_COGNITO_HOSTED_UI_DOMAIN in env config')
-    return
+async function signInWithGoogle(setGoogleLoading) {
+  try {
+    setGoogleLoading(true)
+    await signInWithRedirect({ provider: 'Google' })
+  } catch (err) {
+    console.error('[Google] Error starting Hosted UI redirect:', err)
+    setGoogleLoading(false)
   }
-
-  const url = `https://${domain}/oauth2/authorize?identity_provider=Google&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=CODE&client_id=${clientId}&scope=openid+profile+email`
-  window.location.href = url
 }
 
 export default function RegisterForm({ onBack, onSuccess }) {
@@ -25,6 +21,7 @@ export default function RegisterForm({ onBack, onSuccess }) {
   const [confirmPassword, setConfirmPassword] = useState('')
   const [code, setCode] = useState('')
   const [notice, setNotice] = useState(null)
+  const [googleLoading, setGoogleLoading] = useState(false)
 
   const normalizedEmail = email.trim().toLowerCase()
   const isConfirmStep = step === 'confirm'
@@ -88,8 +85,8 @@ export default function RegisterForm({ onBack, onSuccess }) {
         <>
           <button
             type="button"
-            onClick={signInWithGoogle}
-            disabled={loading}
+            onClick={() => signInWithGoogle(setGoogleLoading)}
+            disabled={loading || googleLoading}
             style={{
               width: '100%',
               height: 40,
@@ -100,7 +97,7 @@ export default function RegisterForm({ onBack, onSuccess }) {
               color: '#202124',
               fontSize: 14,
               fontWeight: 500,
-              cursor: loading ? 'not-allowed' : 'pointer',
+              cursor: loading || googleLoading ? 'not-allowed' : 'pointer',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
