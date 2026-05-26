@@ -24,12 +24,28 @@ export default function ResetPasswordFlow({ onBack, onSuccess }) {
   const [localError, setLocalError] = useState(null)
   const [resendInfo, setResendInfo] = useState(null)
 
+  const getPasswordValidationError = (value) => {
+    if (!value || value.length < 8) {
+      return 'La contraseña debe tener al menos 8 caracteres.'
+    }
+    if (!/[A-Z]/.test(value)) {
+      return 'La contraseña debe incluir al menos una letra mayúscula.'
+    }
+    if (!/[a-z]/.test(value)) {
+      return 'La contraseña debe incluir al menos una letra minúscula.'
+    }
+    if (!/[0-9]/.test(value)) {
+      return 'La contraseña debe incluir al menos un número.'
+    }
+    return null
+  }
+
   const displayError = localError || error
 
   const handleRequest = async () => {
     setLocalError(null)
     clearError()
-    const normalizedEmail = email.trim().toLowerCase()
+    const normalizedEmail = email.trim()
     if (!normalizedEmail) { setLocalError('Ingresa tu correo electrónico'); return }
     if (!/\S+@\S+\.\S+/.test(normalizedEmail)) { setLocalError('Correo electrónico inválido'); return }
     const result = await requestPasswordReset(normalizedEmail)
@@ -38,7 +54,7 @@ export default function ResetPasswordFlow({ onBack, onSuccess }) {
 
   const handleResend = async () => {
     setResendInfo(null)
-    const normalizedEmail = email.trim().toLowerCase()
+    const normalizedEmail = email.trim()
     const result = await requestPasswordReset(normalizedEmail)
     if (result.success) setResendInfo(`Código reenviado a ${normalizedEmail}`)
   }
@@ -54,9 +70,10 @@ export default function ResetPasswordFlow({ onBack, onSuccess }) {
   const handleChangePass = async () => {
     setLocalError(null)
     clearError()
-    if (newPass.length < 8) { setLocalError('La contraseña debe tener al menos 8 caracteres'); return }
+    const passwordValidationError = getPasswordValidationError(newPass)
+    if (passwordValidationError) { setLocalError(passwordValidationError); return }
     if (newPass !== confirmPass) { setLocalError('Las contraseñas no coinciden'); return }
-    const result = await confirmPasswordReset(email.trim().toLowerCase(), otp, newPass)
+    const result = await confirmPasswordReset(email.trim(), otp, newPass)
     if (result.success) setStep(STEPS.DONE)
   }
 
@@ -119,6 +136,9 @@ export default function ResetPasswordFlow({ onBack, onSuccess }) {
           onChange={e => setNewPass(e.target.value)}
           autoComplete="new-password"
         />
+        <p style={{ fontSize: 12, color: 'var(--color-text-hint)', marginTop: 4 }}>
+          Requisitos: 8+ caracteres, una mayúscula, una minúscula y un número.
+        </p>
         <PasswordStrength password={newPass} />
       </Field>
       <Field label="Confirmar contraseña">

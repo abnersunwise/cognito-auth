@@ -43,7 +43,7 @@ export default function LoginForm({ onResetPassword, onRegister, onSuccess }) {
 
   // Check if this user has a backed-up device key (was previously remembered)
   useEffect(() => {
-    const normalized = username.trim().toLowerCase()
+    const normalized = username.trim()
     if (normalized) {
       setDeviceAlreadyKnown(hasDeviceBackup(normalized))
     } else {
@@ -63,7 +63,7 @@ export default function LoginForm({ onResetPassword, onRegister, onSuccess }) {
     if (!username) return
     if (!password) return
     setRememberedDeviceBypassUnavailable(false)
-    const result = await login(username, password, 'email')
+    const result = await login(username, password, 'email-preserve')
 
     if (result.requiresMfa) {
       setRememberedDeviceBypassUnavailable(Boolean(result.rememberedButStillMfa))
@@ -114,7 +114,7 @@ export default function LoginForm({ onResetPassword, onRegister, onSuccess }) {
   }
 
   const handleEmailSetup = async () => {
-    const email = emailSetupValue.trim().toLowerCase()
+    const email = emailSetupValue.trim()
     if (!/\S+@\S+\.\S+/.test(email)) return
 
     const result = await confirmMfaChallenge(email)

@@ -26,12 +26,32 @@ export default function RegisterForm({ onBack, onSuccess }) {
   const normalizedEmail = email.trim().toLowerCase()
   const isConfirmStep = step === 'confirm'
 
+  const getPasswordValidationError = (value) => {
+    if (!value || value.length < 8) {
+      return 'La contraseña debe tener al menos 8 caracteres.'
+    }
+    if (!/[A-Z]/.test(value)) {
+      return 'La contraseña debe incluir al menos una letra mayúscula.'
+    }
+    if (!/[a-z]/.test(value)) {
+      return 'La contraseña debe incluir al menos una letra minúscula.'
+    }
+    if (!/[0-9]/.test(value)) {
+      return 'La contraseña debe incluir al menos un número.'
+    }
+    return null
+  }
+
   const handleRegister = async () => {
     clearError()
     setNotice(null)
 
     if (!/\S+@\S+\.\S+/.test(normalizedEmail)) return
-    if (!password || password.length < 8) return
+    const passwordValidationError = getPasswordValidationError(password)
+    if (passwordValidationError) {
+      setNotice(passwordValidationError)
+      return
+    }
     if (password !== confirmPassword) {
       setNotice('La confirmacion de contraseña no coincide.')
       return
@@ -143,6 +163,9 @@ export default function RegisterForm({ onBack, onSuccess }) {
               onChange={e => setPassword(e.target.value)}
               autoComplete="new-password"
             />
+            <p style={{ fontSize: 12, color: 'var(--color-text-hint)', marginTop: 4 }}>
+              Requisitos: 8+ caracteres, una mayúscula, una minúscula y un número.
+            </p>
           </Field>
 
           <Field label="Confirmar contraseña">

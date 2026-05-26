@@ -30,7 +30,7 @@ export function useAuth() {
   const clearError = () => setError(null)
 
   // --- LOGIN ---
-  const login = async (username, password, authType = 'email') => {
+  const login = async (username, password, authType = 'email-preserve') => {
     setLoading(true)
     setError(null)
     try {
@@ -287,7 +287,7 @@ export function useAuth() {
     setLoading(true)
     setError(null)
     try {
-      const normalizedUsername = normalizeUsername(username, 'email')
+      const normalizedUsername = normalizeUsername(username, 'email-preserve')
       await resetPassword({ username: normalizedUsername })
       setLoading(false)
       return { success: true }
@@ -304,7 +304,7 @@ export function useAuth() {
     setLoading(true)
     setError(null)
     try {
-      const normalizedUsername = normalizeUsername(username, 'email')
+      const normalizedUsername = normalizeUsername(username, 'email-preserve')
       await confirmResetPassword({
         username: normalizedUsername,
         confirmationCode: String(confirmationCode).trim(),
@@ -670,7 +670,7 @@ function mapCognitoError(err) {
     case 'VerifySoftwareTokenException':
       return 'No se pudo verificar el código TOTP. Revisa el código de tu app autenticadora.'
     case 'InvalidPasswordException':
-      return 'La contraseña no cumple los requisitos mínimos.'
+      return 'La contraseña debe tener al menos 8 caracteres, incluir una mayúscula, una minúscula y un número.'
     case 'InvalidParameterException':
       return 'Datos inválidos. Verifica el correo ingresado.'
     case 'TooManyRequestsException':
@@ -688,6 +688,10 @@ function normalizeUsername(rawValue, authType) {
   if (authType === 'phone') {
     // Cognito espera formato E.164; quitamos separadores comunes.
     return value.replace(/[\s()-]/g, '')
+  }
+
+  if (authType === 'email-preserve') {
+    return value
   }
 
   return value.toLowerCase()
