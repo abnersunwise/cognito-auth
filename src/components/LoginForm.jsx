@@ -1,8 +1,10 @@
 // src/components/LoginForm.jsx
 import React, { useState, useEffect } from 'react'
 import { Logo, Card, Field, Input, Button, Alert, LinkButton, BackButton, OtpInput } from './ui'
+import { Amplify } from 'aws-amplify'
 import { signInWithRedirect } from 'aws-amplify/auth'
 import { useAuth } from '../hooks/useAuth'
+import { getAvailableAppClients, getActiveAppClientId, getAmplifyConfig, setActiveAppClientId } from '../aws-config'
 
 // Redirige a Hosted UI de Cognito para Google
 async function signInWithGoogle(setGoogleLoading) {
@@ -15,6 +17,19 @@ async function signInWithGoogle(setGoogleLoading) {
   }
 }
 import { hasDeviceBackup } from '../hooks/useAuth'
+
+function decodeJwtPayload(token) {
+  if (!token) return null
+  try {
+    const parts = token.split('.')
+    if (parts.length < 2) return null
+    const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+    const padded = base64.padEnd(base64.length + (4 - (base64.length % 4 || 4)) % 4, '=')
+    return JSON.parse(window.atob(padded))
+  } catch {
+    return null
+  }
+}
 
 export default function LoginForm({ onResetPassword, onRegister, onSuccess }) {
   const {
@@ -35,11 +50,23 @@ export default function LoginForm({ onResetPassword, onRegister, onSuccess }) {
   const [rememberThisDevice, setRememberThisDevice] = useState(true)
   const [rememberedDeviceBypassUnavailable, setRememberedDeviceBypassUnavailable] = useState(false)
   const [googleLoading, setGoogleLoading] = useState(false)
+  const [availableClients] = useState(getAvailableAppClients())
+  const [activeClientId, setActiveClientId] = useState(getActiveAppClientId())
 
   // Limpiar error cuando el componente se monta (después de logout)
   useEffect(() => {
     clearError()
   }, [])
+
+  const handleClientChange = (nextClientId) => {
+    const resolvedClientId = setActiveAppClientId(nextClientId)
+    setActiveClientId(resolvedClientId)
+    Amplify.configure(getAmplifyConfig(resolvedClientId))
+    const selectedClient = availableClients.find((client) => client.id === resolvedClientId)
+    console.log('[Auth] App Client seleccionado:', selectedClient?.label || resolvedClientId, resolvedClientId)
+    clearError()
+    setMfaStep(null)
+  }
 
   // Check if this user has a backed-up device key (was previously remembered)
   useEffect(() => {
@@ -53,6 +80,14 @@ export default function LoginForm({ onResetPassword, onRegister, onSuccess }) {
 
   const finishLogin = async (result) => {
     const tokens = await getTokens()
+    const idTokenPayload = decodeJwtPayload(tokens.idToken)
+    const groups = idTokenPayload?.['cognito:groups'] || []
+    const tokenClientId = idTokenPayload?.aud || '(not available)'
+    const selectedClient = availableClients.find((client) => client.id === activeClientId)
+
+    console.log('[Auth] App Client activo (selector):', selectedClient?.label || activeClientId, activeClientId)
+    console.log('[Auth] App Client en ID token (aud):', tokenClientId)
+    console.log('[Auth] Grupos del usuario (cognito:groups):', Array.isArray(groups) ? groups : [groups])
     console.log('Cognito Access Token:', tokens.accessToken)
     console.log('Cognito Refresh Token:', tokens.refreshToken)
     console.log('Cognito ID Token:', tokens.idToken)
@@ -265,6 +300,32 @@ export default function LoginForm({ onResetPassword, onRegister, onSuccess }) {
       </p>
 
       {error && <Alert type="error">{error}</Alert>}
+
+      {availableClients.length > 1 && (
+        <Field label="App Client">
+          <select
+            value={activeClientId}
+            onChange={e => handleClientChange(e.target.value)}
+            style={{
+              width: '100%',
+              height: 38,
+              padding: '0 10px',
+              fontSize: 14,
+              border: '0.5px solid var(--color-border)',
+              borderRadius: 'var(--radius-md)',
+              background: 'var(--color-surface)',
+              color: 'var(--color-text)',
+              outline: 'none',
+            }}
+          >
+            {availableClients.map((client) => (
+              <option key={client.id} value={client.id}>
+                {client.label}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
 
       <Field label="Correo electrónico">
         <Input

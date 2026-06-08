@@ -5,6 +5,7 @@ import { QRCodeSVG } from 'qrcode.react'
 import LoginForm from './components/LoginForm'
 import ResetPasswordFlow from './components/ResetPasswordFlow'
 import RegisterForm from './components/RegisterForm'
+import { getActiveAppClientId, getAvailableAppClients } from './aws-config'
 import { useAuth } from './hooks/useAuth'
 import { Alert, Field, Input } from './components/ui'
 
@@ -31,11 +32,17 @@ export default function App() {
   const [displayName, setDisplayName] = useState('Usuario autenticado')
   const [profileImageUrl, setProfileImageUrl] = useState(null)
   const [isFederatedUser, setIsFederatedUser] = useState(null)
+  const [callbackDebug, setCallbackDebug] = useState(null)
   const [initializingSession, setInitializingSession] = useState(true)
   const { logout, getUser, getTokens, clearError } = useAuth()
   const SOCIAL_SESSION_WAIT_MS = 3000
   const SOCIAL_SESSION_POLL_MS = 120
   const DEBUG_AUTH = import.meta.env.DEV || import.meta.env.VITE_DEBUG_AUTH === 'true'
+  const STAFF_WEB_CLIENT_ID = '5pjp5gauclo7ifqv39bc9m93ab'
+  const SUNWISE_WEB_CLIENT_ID = '65ru3aghhfs76ib9vj07dbsi8b'
+  const activeClientId = getActiveAppClientId()
+  const activeClient = getAvailableAppClients().find((client) => client.id === activeClientId)
+  const isStaffWebSession = activeClientId === STAFF_WEB_CLIENT_ID
 
   const debugAuth = (...args) => {
     if (DEBUG_AUTH) console.log(...args)
@@ -56,6 +63,61 @@ export default function App() {
   }
 
   const wait = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms))
+
+  const normalizeHostedUiDomain = (value) => String(value || '').replace(/^https?:\/\//, '').replace(/\/$/, '')
+
+  const encodeState = (value) => {
+    const json = JSON.stringify(value)
+    const base64 = window.btoa(unescape(encodeURIComponent(json)))
+    return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+  }
+
+  const decodeState = (value) => {
+    if (!value) return null
+    try {
+      const base64 = value.replace(/-/g, '+').replace(/_/g, '/')
+      const padded = base64.padEnd(base64.length + (4 - (base64.length % 4 || 4)) % 4, '=')
+      const json = decodeURIComponent(escape(window.atob(padded)))
+      return JSON.parse(json)
+    } catch {
+      return null
+    }
+  }
+
+  const generateSupportSessionId = () => {
+    if (typeof window !== 'undefined' && window.crypto?.randomUUID) {
+      return window.crypto.randomUUID()
+    }
+
+    return `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`
+  }
+
+  const openSunwiseSsoWindow = () => {
+    const domain = normalizeHostedUiDomain(import.meta.env.VITE_COGNITO_HOSTED_UI_DOMAIN)
+    const redirectUri = import.meta.env.VITE_SSO_SUNWISE_REDIRECT_URI || 'https://portal.stg.sunwise.io/callback'
+    const supportSessionId = generateSupportSessionId()
+    const state = encodeState({
+      supportsessionid: supportSessionId,
+      sourceClientId: activeClientId,
+      targetClientId: SUNWISE_WEB_CLIENT_ID,
+      createdAt: Date.now(),
+    })
+
+    const query = new URLSearchParams({
+      client_id: SUNWISE_WEB_CLIENT_ID,
+      response_type: 'code',
+      scope: 'openid email profile',
+      redirect_uri: redirectUri,
+      prompt: 'none',
+      state,
+    })
+
+    const authorizeUrl = `https://${domain}/oauth2/authorize?${query.toString()}`
+    console.log('[SSO] Opening silent SSO window for sunwise-web:', authorizeUrl)
+    console.log('[SSO] redirect_uri used for sunwise-web:', redirectUri)
+    console.log('[SSO] supportsessionid:', supportSessionId)
+    window.open(authorizeUrl, '_blank', 'noopener,noreferrer')
+  }
 
   const extractPictureFromPayload = (payload) => {
     if (!payload || typeof payload !== 'object') return null
@@ -163,6 +225,14 @@ export default function App() {
     try {
       const tokens = await getTokens()
       const idTokenPayload = decodeJwtPayload(tokens.idToken)
+      const selectedClientId = getActiveAppClientId()
+      const selectedClient = getAvailableAppClients().find((client) => client.id === selectedClientId)
+      const tokenClientId = idTokenPayload?.aud || '(not available)'
+      const groups = idTokenPayload?.['cognito:groups'] || []
+
+      console.log('[Auth] App Client activo (selector):', selectedClient?.label || selectedClientId, selectedClientId)
+      console.log('[Auth] App Client en ID token (aud):', tokenClientId)
+      console.log('[Auth] Grupos del usuario (cognito:groups):', Array.isArray(groups) ? groups : [groups])
 
       debugAuth(`[OAuth] ${label} Access Token:`, tokens.accessToken || '(not available)')
       debugAuth(`[OAuth] ${label} Refresh Token:`, tokens.refreshToken || '(not available)')
@@ -273,6 +343,76 @@ export default function App() {
     if (isCallbackRoute) {
       setView(VIEWS.CALLBACK)
       debugAuth('[OAuth callback] entered callback route:', window.location.href)
+      const callbackParams = new URLSearchParams(window.location.search)
+      const callbackCode = callbackParams.get('code')
+      const callbackRawState = callbackParams.get('state')
+      const callbackState = decodeState(callbackParams.get('state'))
+      if (callbackState?.supportsessionid) {
+        console.log('[SSO] supportsessionid (callback):', callbackState.supportsessionid)
+      }
+      const isSupportCallback = Boolean(callbackState?.supportsessionid)
+
+      if (isSupportCallback) {
+        let cancelled = false
+        setCallbackDebug({
+          loading: true,
+          code: callbackCode,
+          rawState: callbackRawState,
+          decodedState: callbackState,
+          tokens: null,
+          idTokenPayload: null,
+          error: null,
+        })
+
+        ;(async () => {
+          const socialUser = await waitForSocialSession()
+
+          if (cancelled) return
+
+          if (socialUser) {
+            setUser(socialUser)
+            clearError()
+          } else {
+            const currentUser = await Promise.race([
+              getUser(),
+              new Promise((resolve) => window.setTimeout(() => resolve(null), 2500)),
+            ])
+            if (currentUser) {
+              setUser(currentUser)
+            }
+          }
+
+          const tokens = await getTokens()
+          const idTokenPayload = decodeJwtPayload(tokens.idToken)
+
+          setCallbackDebug({
+            loading: false,
+            code: callbackCode,
+            rawState: callbackRawState,
+            decodedState: callbackState,
+            tokens,
+            idTokenPayload,
+            error: null,
+          })
+          setInitializingSession(false)
+        })().catch((error) => {
+          if (cancelled) return
+          setCallbackDebug({
+            loading: false,
+            code: callbackCode,
+            rawState: callbackRawState,
+            decodedState: callbackState,
+            tokens: null,
+            idTokenPayload: null,
+            error: error?.message || 'No se pudo leer la información del callback.',
+          })
+          setInitializingSession(false)
+        })
+
+        return () => {
+          cancelled = true
+        }
+      }
 
       let cancelled = false
       ;(async () => {
@@ -378,10 +518,24 @@ export default function App() {
         <p style={{ fontSize: 13, color: 'var(--color-text-muted)', marginBottom: '1rem' }}>
           Usuario: <strong>{displayName}</strong>
         </p>
+        <p style={{ fontSize: 12, color: 'var(--color-text-muted)', margin: '-0.5rem 0 1rem' }}>
+          App Client activo: <strong>{activeClient?.label || activeClientId}</strong>
+        </p>
         {profileImageUrl && (
           <p style={{ fontSize: 12, color: 'var(--color-text-muted)', margin: '-0.4rem 0 1rem' }}>
             Foto de perfil: <strong>recibida</strong>
           </p>
+        )}
+        {isStaffWebSession && (
+          <button
+            onClick={openSunwiseSsoWindow}
+            style={{
+              width: '100%', height: 34, background: '#0F766E', color: '#fff', border: 'none',
+              borderRadius: 8, fontSize: 13, fontWeight: 500, cursor: 'pointer', marginBottom: '0.75rem',
+            }}
+          >
+            Iniciar sesión SSO en sunwise-web
+          </button>
         )}
         {isFederatedUser === null ? (
           <p style={{ fontSize: 12, color: 'var(--color-text-muted)', margin: '0 0 1rem' }}>
@@ -427,6 +581,84 @@ export default function App() {
   }
 
   if (view === VIEWS.CALLBACK) {
+    if (callbackDebug) {
+      return (
+        <div style={{
+          background: 'var(--color-surface)', border: '0.5px solid var(--color-border)',
+          borderRadius: 12, padding: '1.25rem', width: '100%', maxWidth: 640, textAlign: 'left',
+        }}>
+          <h2 style={{ fontSize: 18, fontWeight: 600, margin: '0 0 0.35rem' }}>Callback SSO recibido</h2>
+          <p style={{ fontSize: 12, color: 'var(--color-text-muted)', margin: '0 0 1rem' }}>
+            Vista de diagnóstico para soporte (state + tokens del callback)
+          </p>
+
+          {callbackDebug.loading ? (
+            <p style={{ fontSize: 13, color: 'var(--color-text-muted)', margin: 0 }}>
+              Procesando callback y leyendo tokens...
+            </p>
+          ) : (
+            <>
+              {callbackDebug.error && <Alert type="error">{callbackDebug.error}</Alert>}
+              <Field label="authorization code">
+                <Input readOnly value={callbackDebug.code || '(sin code)'} />
+              </Field>
+              <Field label="supportsessionid (state)">
+                <Input readOnly value={callbackDebug.decodedState?.supportsessionid || '(no enviado)'} />
+              </Field>
+
+              <Field label="state decodificado">
+                <pre style={{
+                  margin: 0,
+                  padding: '10px',
+                  fontSize: 12,
+                  borderRadius: 8,
+                  border: '0.5px solid var(--color-border)',
+                  background: 'var(--color-surface)',
+                  color: 'var(--color-text)',
+                  overflowX: 'auto',
+                  whiteSpace: 'pre-wrap',
+                }}>
+                  {JSON.stringify(callbackDebug.decodedState || {}, null, 2)}
+                </pre>
+              </Field>
+
+              <Field label="tokens (nuevo app client)">
+                <pre style={{
+                  margin: 0,
+                  padding: '10px',
+                  fontSize: 12,
+                  borderRadius: 8,
+                  border: '0.5px solid var(--color-border)',
+                  background: 'var(--color-surface)',
+                  color: 'var(--color-text)',
+                  overflowX: 'auto',
+                  whiteSpace: 'pre-wrap',
+                }}>
+                  {JSON.stringify(callbackDebug.tokens || {}, null, 2)}
+                </pre>
+              </Field>
+
+              <Field label="id_token decodificado">
+                <pre style={{
+                  margin: 0,
+                  padding: '10px',
+                  fontSize: 12,
+                  borderRadius: 8,
+                  border: '0.5px solid var(--color-border)',
+                  background: 'var(--color-surface)',
+                  color: 'var(--color-text)',
+                  overflowX: 'auto',
+                  whiteSpace: 'pre-wrap',
+                }}>
+                  {JSON.stringify(callbackDebug.idTokenPayload || {}, null, 2)}
+                </pre>
+              </Field>
+            </>
+          )}
+        </div>
+      )
+    }
+
     return (
       <div style={{
         background: 'var(--color-surface)', border: '0.5px solid var(--color-border)',
