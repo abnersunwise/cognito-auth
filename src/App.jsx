@@ -94,7 +94,7 @@ export default function App() {
 
   const openSunwiseSsoWindow = () => {
     const domain = normalizeHostedUiDomain(import.meta.env.VITE_COGNITO_HOSTED_UI_DOMAIN)
-    const redirectUri = import.meta.env.VITE_SSO_SUNWISE_REDIRECT_URI || 'https://portal.stg.sunwise.io/callback'
+    const redirectUri = import.meta.env.VITE_SSO_SUNWISE_REDIRECT_URI || `${window.location.origin}/callback`
     const supportSessionId = generateSupportSessionId()
     const state = encodeState({
       supportsessionid: supportSessionId,
@@ -365,25 +365,31 @@ export default function App() {
         })
 
         ;(async () => {
-          const socialUser = await waitForSocialSession()
+          const domain = normalizeHostedUiDomain(import.meta.env.VITE_COGNITO_HOSTED_UI_DOMAIN)
+          const redirectUri = `${window.location.origin}/callback`
+          const targetClientId = callbackState.targetClientId
 
-          if (cancelled) return
+          const response = await fetch(`https://${domain}/oauth2/token`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+              grant_type: 'authorization_code',
+              code: callbackCode,
+              client_id: targetClientId,
+              redirect_uri: redirectUri,
+            }).toString(),
+          })
 
-          if (socialUser) {
-            setUser(socialUser)
-            clearError()
-          } else {
-            const currentUser = await Promise.race([
-              getUser(),
-              new Promise((resolve) => window.setTimeout(() => resolve(null), 2500)),
-            ])
-            if (currentUser) {
-              setUser(currentUser)
-            }
+          if (!response.ok) {
+            const err = await response.json().catch(() => ({}))
+            throw new Error(err.error_description || err.error || `Token exchange failed: ${response.status}`)
           }
 
-          const tokens = await getTokens()
-          const idTokenPayload = decodeJwtPayload(tokens.idToken)
+          const tokens = await response.json()
+          const idTokenPayload = decodeJwtPayload(tokens.id_token)
+
+          console.log('[SSO] Tokens for target client:', targetClientId)
+          console.log('[SSO] id_token aud:', idTokenPayload?.aud)
 
           setCallbackDebug({
             loading: false,
