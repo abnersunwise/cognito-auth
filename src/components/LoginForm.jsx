@@ -4,7 +4,15 @@ import { Logo, Card, Field, Input, Button, Alert, LinkButton, BackButton, OtpInp
 import { Amplify } from 'aws-amplify'
 import { signInWithRedirect } from 'aws-amplify/auth'
 import { useAuth } from '../hooks/useAuth'
-import { getAvailableAppClients, getActiveAppClientId, getAmplifyConfig, setActiveAppClientId } from '../aws-config'
+import {
+  getAvailableAppClients,
+  getActiveAppClientId,
+  getAmplifyConfig,
+  setActiveAppClientId,
+  getAvailableEnvironments,
+  getActiveEnvironmentId,
+  setActiveEnvironmentId,
+} from '../aws-config'
 
 // Redirige a Hosted UI de Cognito para Google
 async function signInWithGoogle(setGoogleLoading) {
@@ -50,7 +58,9 @@ export default function LoginForm({ onResetPassword, onRegister, onSuccess }) {
   const [rememberThisDevice, setRememberThisDevice] = useState(true)
   const [rememberedDeviceBypassUnavailable, setRememberedDeviceBypassUnavailable] = useState(false)
   const [googleLoading, setGoogleLoading] = useState(false)
-  const [availableClients] = useState(getAvailableAppClients())
+  const [availableEnvs] = useState(getAvailableEnvironments())
+  const [activeEnvId, setActiveEnvId] = useState(getActiveEnvironmentId())
+  const [availableClients, setAvailableClients] = useState(getAvailableAppClients())
   const [activeClientId, setActiveClientId] = useState(getActiveAppClientId())
 
   // Limpiar error cuando el componente se monta (después de logout)
@@ -58,10 +68,25 @@ export default function LoginForm({ onResetPassword, onRegister, onSuccess }) {
     clearError()
   }, [])
 
+  const handleEnvironmentChange = (nextEnvId) => {
+    const env = availableEnvs.find((e) => e.id === nextEnvId)
+    if (!env) return
+    setActiveEnvironmentId(nextEnvId)
+    setActiveEnvId(nextEnvId)
+    const clients = env.appClients
+    setAvailableClients(clients)
+    const newClientId = setActiveAppClientId(env.defaultClientId, nextEnvId)
+    setActiveClientId(newClientId)
+    Amplify.configure(getAmplifyConfig(newClientId, nextEnvId))
+    console.log('[Auth] Ambiente seleccionado:', env.label, nextEnvId)
+    clearError()
+    setMfaStep(null)
+  }
+
   const handleClientChange = (nextClientId) => {
-    const resolvedClientId = setActiveAppClientId(nextClientId)
+    const resolvedClientId = setActiveAppClientId(nextClientId, activeEnvId)
     setActiveClientId(resolvedClientId)
-    Amplify.configure(getAmplifyConfig(resolvedClientId))
+    Amplify.configure(getAmplifyConfig(resolvedClientId, activeEnvId))
     const selectedClient = availableClients.find((client) => client.id === resolvedClientId)
     console.log('[Auth] App Client seleccionado:', selectedClient?.label || resolvedClientId, resolvedClientId)
     clearError()
@@ -300,6 +325,32 @@ export default function LoginForm({ onResetPassword, onRegister, onSuccess }) {
       </p>
 
       {error && <Alert type="error">{error}</Alert>}
+
+      {availableEnvs.length > 1 && (
+        <Field label="Ambiente">
+          <select
+            value={activeEnvId}
+            onChange={e => handleEnvironmentChange(e.target.value)}
+            style={{
+              width: '100%',
+              height: 38,
+              padding: '0 10px',
+              fontSize: 14,
+              border: '0.5px solid var(--color-border)',
+              borderRadius: 'var(--radius-md)',
+              background: 'var(--color-surface)',
+              color: 'var(--color-text)',
+              outline: 'none',
+            }}
+          >
+            {availableEnvs.map((env) => (
+              <option key={env.id} value={env.id}>
+                {env.label}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
 
       {availableClients.length > 1 && (
         <Field label="App Client">

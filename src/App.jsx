@@ -5,7 +5,7 @@ import { QRCodeSVG } from 'qrcode.react'
 import LoginForm from './components/LoginForm'
 import ResetPasswordFlow from './components/ResetPasswordFlow'
 import RegisterForm from './components/RegisterForm'
-import { getActiveAppClientId, getAvailableAppClients } from './aws-config'
+import { getActiveAppClientId, getAvailableAppClients, getActiveEnvironment } from './aws-config'
 import { useAuth } from './hooks/useAuth'
 import { Alert, Field, Input } from './components/ui'
 
@@ -38,11 +38,11 @@ export default function App() {
   const SOCIAL_SESSION_WAIT_MS = 3000
   const SOCIAL_SESSION_POLL_MS = 120
   const DEBUG_AUTH = import.meta.env.DEV || import.meta.env.VITE_DEBUG_AUTH === 'true'
-  const STAFF_WEB_CLIENT_ID = '5pjp5gauclo7ifqv39bc9m93ab'
-  const SUNWISE_WEB_CLIENT_ID = '65ru3aghhfs76ib9vj07dbsi8b'
   const activeClientId = getActiveAppClientId()
+  const activeEnv = getActiveEnvironment()
   const activeClient = getAvailableAppClients().find((client) => client.id === activeClientId)
-  const isStaffWebSession = activeClientId === STAFF_WEB_CLIENT_ID
+  const isStaffWebSession = activeClient?.label === 'staff-web'
+  const sunwiseClient = getAvailableAppClients().find((c) => c.label === 'sunwise-web')
 
   const debugAuth = (...args) => {
     if (DEBUG_AUTH) console.log(...args)
@@ -93,18 +93,23 @@ export default function App() {
   }
 
   const openSunwiseSsoWindow = () => {
-    const domain = normalizeHostedUiDomain(import.meta.env.VITE_COGNITO_HOSTED_UI_DOMAIN)
+    const domain = activeEnv.hostedUIDomain
+    const targetClientId = sunwiseClient?.id
+    if (!targetClientId) {
+      console.warn('[SSO] No sunwise-web client found in current environment')
+      return
+    }
     const redirectUri = import.meta.env.VITE_SSO_SUNWISE_REDIRECT_URI || `${window.location.origin}/callback`
     const supportSessionId = generateSupportSessionId()
     const state = encodeState({
       supportsessionid: supportSessionId,
       sourceClientId: activeClientId,
-      targetClientId: SUNWISE_WEB_CLIENT_ID,
+      targetClientId,
       createdAt: Date.now(),
     })
 
     const query = new URLSearchParams({
-      client_id: SUNWISE_WEB_CLIENT_ID,
+      client_id: targetClientId,
       response_type: 'code',
       scope: 'openid email profile',
       redirect_uri: redirectUri,
@@ -365,7 +370,7 @@ export default function App() {
         })
 
         ;(async () => {
-          const domain = normalizeHostedUiDomain(import.meta.env.VITE_COGNITO_HOSTED_UI_DOMAIN)
+          const domain = getActiveEnvironment().hostedUIDomain
           const redirectUri = `${window.location.origin}/callback`
           const targetClientId = callbackState.targetClientId
 
